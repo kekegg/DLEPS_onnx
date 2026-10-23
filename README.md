@@ -1,10 +1,21 @@
-# DLEPS — Python 3 port
+# DLEPS — ONNX build
 
 **Deep Learning based Efficacy Prediction System** for drug discovery.
 
-This repository is the **Python 3 port** of [`kekegg/DLEPS`](https://github.com/kekegg/DLEPS),
-which still targets Python 2. The original remains the canonical reference for the
-method and the paper; this repository is the maintained, installable version.
+This repository is the **ONNX build** of DLEPS. It is derived from
+[`kekegg/DLEPS_py3`](https://github.com/kekegg/DLEPS_py3) (the Python 3 port of
+[`kekegg/DLEPS`](https://github.com/kekegg/DLEPS), which still targets Python 2) with a
+single, deliberately small change: **the model inference runs on ONNX Runtime instead of
+Keras/TensorFlow.**
+
+* **No TensorFlow, no Keras, no `keras.backend`** — the inference path imports only
+  `onnxruntime`, `numpy`, `pandas`, `h5py`, `rdkit` and `nltk`.
+* **No `vae.hdf5`** — the exported graph already contains the whole inference stack
+  (grammar encoder → VAE sampling → expression head), so the separate Keras grammar
+  model is no longer needed at prediction time.
+* **Same numbers.** The ONNX graph carries the original Keras weights bit for bit; the
+  end-to-end enrichment scores are identical to the Keras build (see
+  [Verification](#verification)).
 
 > **If you use DLEPS — the code, the model weights, or any drug-efficacy predictions it
 > produces — please cite the paper below.**
@@ -51,96 +62,151 @@ method and the paper; this repository is the maintained, installable version.
 
 ---
 
-# What changed in the Python 3 port
+# What changed in the ONNX build
 
-The bulk of the conversion is mechanical and was produced by **`2to3`**
-(`python -m lib2to3 -w -n code/DLEPS/`). Two categories of change were needed on
-top of it, because `2to3` only rewrites *syntax* — it knows nothing about
-library APIs.
-
-## 1. Mechanical (`2to3`)
+Only the **model inference** was touched. Everything downstream of the model — the
+one-hot encoding, the dense gene-weight matrix, the connectivity score and the
+enrichment score — is byte-identical to `DLEPS_py3`.
 
 | File | Change |
 |---|---|
-| `code/DLEPS/dleps_predictor.py` | dropped the now-redundant `from __future__ import print_function` / `division` |
-| `code/DLEPS/driv_DLEPS.py` | `print(x)` → `print((x))` |
-| `code/DLEPS/utils.py` | `print(x)` → `print((x))` |
-| `code/DLEPS/molecule_vae.py` | `map(str, rhs[ix])[::-1]` → `list(map(str, rhs[ix]))[::-1]` — **required**: in Python 3 `map` returns an iterator, which cannot be sliced |
-| `code/DLEPS/molecule_vae.py` | builtin `reduce` → `from functools import reduce` |
+| `code/DLEPS/dleps_predictor.py` | Keras model → `onnxruntime.InferenceSession`; removed the TensorFlow imports and the `sampling()` helper; `train()` now raises `NotImplementedError` |
+| `code/DLEPS/molecule_vae.py` | `import models.model_zinc` moved into `ZincGrammarModel.__init__` |
 
-## 2. Library-API migration (not covered by `2to3`)
+Everything else — `utils.py`, `vectorized_cmap.py`, `zinc_grammar.py`, `driv_DLEPS.py`,
+`run_script`, the notebooks — is unchanged from `DLEPS_py3`.
 
-The original code targets `tensorflow>=1.15` / `keras>=2.3`. On a modern
-TensorFlow stack the following modules no longer exist:
+## Why `molecule_vae.py` had to change
 
-| Before (Keras 2.3) | After (Keras 2.15) |
-|---|---|
-| `from keras import objectives` | `from keras import losses as objectives` |
-| `from keras.layers.core import ...` | `from keras.layers import ...` |
-| `from keras.layers.wrappers import TimeDistributed` | `from keras.layers import TimeDistributed` |
-| `from keras.layers.recurrent import GRU` | `from keras.layers import GRU` |
-| `from keras.layers.convolutional import Convolution1D` | `from keras.layers import Conv1D as Convolution1D` |
+`utils.py` needs `get_zinc_tokenizer()` from `molecule_vae.py`, and `molecule_vae.py`
+imported `models.model_zinc` at module level. `models/model_zinc.py` imports Keras **and**
+creates TensorFlow variables at import time (`masks_K = K.variable(G.masks)`), so the
+Keras dependency reached all the way into the one-hot encoder.
 
-The `objectives` → `losses` swap is **semantically exact**, not an
-approximation: Keras 2.3.1 defined
+Deferring that single import into `ZincGrammarModel.__init__` — where the grammar model
+is actually instantiated — cuts the chain:
+
+```
+utils.py → molecule_vae.py → (nltk, numpy, zinc_grammar)      # no Keras
+                 └→ models/model_zinc.py → Keras               # only when a grammar model is built
+```
+
+`models/model_zinc.py` and `models/model_zinc_str.py` still require Keras; they are only
+needed for **training** (see [Training](#training)).
+
+## The exported graph
+
+The ONNX file is a `keras2onnx` export of the trained Keras model, and it is a **single
+merged graph**:
+
+```
+one-hot (N, 277, 76)
+  → conv_1 → conv_2 → conv_3 → flatten_1 → dense_1
+  → z_mean / z_log_var
+  → sampling  (reparameterisation, ε ~ N(0, 0.01))
+  → dense_3 → dense_4 → dense_5 → dense_6 → dense_7
+expression (N, 978)
+```
+
+`277 × 76` is the grammar one-hot encoding produced by `utils.to1hot()` — the same
+function the Keras build used, unchanged. Dropout layers are absent, as usual at
+inference time.
+
+> **Note on the sampling step.** The VAE head is *stochastic*: `sampling()` adds
+> `exp(z_log_var / 2) · ε` with `ε ~ N(0, 0.01)`. Two runs of the **same** model on the
+> **same** molecule therefore differ slightly — this is a property of the original model,
+> not of the ONNX port. Measured run-to-run spread over 8 repeats: **0.265** for the ONNX
+> graph vs **0.274** for the Keras model.
+
+## Ensembles
+
+`DLEPS` accepts a list of ONNX files and averages their outputs, matching the ensemble
+rule used by the AIDock server:
 
 ```python
-# keras/losses.py, Keras 2.3.1
-def binary_crossentropy(y_true, y_pred, from_logits=False, label_smoothing=0):
-    ...
-    return K.mean(K.binary_crossentropy(y_true, y_pred, from_logits=from_logits), axis=-1)
+from dleps_predictor import DLEPS
+
+predictor = DLEPS(
+    up_name='../../data/HUA_up',
+    down_name='../../data/HUA_down',
+    onnx_dir='../../data/onnx',
+    onnx_files=['dleps_0b_0.73.h5.onnx', 'dleps_1_0.726.h5.onnx'],
+)
 ```
 
-and Keras 2.15 defines `keras.losses.binary_crossentropy` with the same
-`mean(..., axis=-1)` reduction. The call sites are unchanged.
+Only `dleps_0b_0.73.h5.onnx` is shipped here. The sibling exports
+(`dleps_1_0.726`, `dleps_2_0.723`, `dleps_3_0.728`, `transformer_dleps_1b/2b/3b`) come
+from the same training run and can be dropped into `data/onnx/` if you want the
+ensemble.
 
-## 3. Division semantics — checked, unchanged
+---
 
-`2to3` cannot prove whether `a / b` was meant as integer or true division, so
-every `/` was audited individually with `tokenize`. All eight are safe:
+# Verification
 
-* `dleps_predictor.py` already imported `from __future__ import division`, so
-  its two divisions were true division under Python 2 as well;
-* `utils.py` forces float with `i * 1.0 / len(smiles)`;
-* `models/model_zinc*.py` divide Keras tensors (always float);
-* `vectorized_cmap.py` divides pandas Series (always float).
+Three independent checks, all reproducible.
 
-No `//` was introduced, because none of them were integer divisions.
+### 1. The weights are bit-for-bit identical
 
-## 4. Notebooks
+`dleps_0b_0.73.h5.onnx` carries exactly the weights of the Keras checkpoint
+`DLEPS_30000_tune_gvae10000.h5` that the Keras build loads — **22/22 tensors identical**:
 
-All seven notebooks already carried Python 3 metadata (`python3` kernel,
-`language_info.version = 3.7.3`) and contain no Python 2 syntax, so they were
-copied unchanged.
-
-## Verified
-
-```
-Python 3.9.7 · TensorFlow 2.15.0 · Keras 2.15.0 · NumPy 1.26.4
-pandas 2.2.3 · scikit-learn 1.6.1 · RDKit 2023.03.3 · NLTK 3.9.1
+```bash
+python scripts/verify_onnx_weights.py \
+    --h5   path/to/DLEPS_30000_tune_gvae10000.h5 \
+    --onnx data/onnx/dleps_0b_0.73.h5.onnx
 ```
 
-* All seven modules import cleanly under Python 3.
-* `python driv_DLEPS.py --help` runs.
-* The VAE graph builds: encoder 1,102,985 params (output `(None, 2)`),
-  decoder 3,821,723 params (output `(None, 277, 89)`), autoencoder
-  4,924,708 params.
+```
+Keras tensor              ONNX initializer        shape            max|diff|    identical
+conv_1_2                  conv_1/kernel:0          (9, 76, 9)       0.000e+00    True
+conv_2_2                  conv_2/kernel:0          (9, 9, 9)        0.000e+00    True
+conv_3_2                  conv_3/kernel:0          (10, 9, 11)      0.000e+00    True
+dense_1_2                 dense_1/kernel:0         (2510, 435)      0.000e+00    True
+z_mean_2                  z_mean/kernel:0          (435, 56)        0.000e+00    True
+z_log_var_2               z_log_var/kernel:0       (435, 56)        0.000e+00    True
+dense_3 … dense_7         dense_3 … dense_7        (…, 1024/978)    0.000e+00    True
+--------------------------------------------------------------------------
+22/22 tensors are bit-for-bit identical
+```
+
+(The only transformation is the Conv1D kernel layout: Keras stores
+`(kernel_size, in, filters)`, ONNX wants `(filters, in, kernel_size)` — a transpose, which
+the script applies before comparing.)
+
+### 2. The graphs compute the same thing
+
+With the sampling noise switched off on both sides (`ε = 0`), the ONNX graph and the
+Keras model agree to float32 rounding:
+
+| | max abs difference |
+|---|---:|
+| ONNX vs Keras, expression output `(N, 978)` | **1.43 × 10⁻⁶** |
+| ONNX vs Keras, enrichment scores (full pipeline) | **0.0** (bit-identical) |
+
+### 3. The sampling noise matches too
+
+| | max spread over 8 repeats |
+|---|---:|
+| Keras model | 0.274 |
+| ONNX graph | 0.265 |
 
 ---
 
 # Setup
 
 ```bash
-conda create -n dleps-py3 python=3.9 -y
-conda activate dleps-py3
+conda create -n dleps-onnx python=3.11 -y
+conda activate dleps-onnx
 
 pip install -r requirements.txt
 # or, with the conda-flavoured RDKit:
 conda install -c conda-forge rdkit
 ```
 
-> `lib2to3` was removed from Python 3.13, so if you want to re-run the
-> conversion yourself use Python ≤ 3.12 (`python -m lib2to3 -w -n code/DLEPS/`).
+```
+Python 3.13.7 · onnxruntime 1.30.0 · NumPy 2.4.2 · pandas 3.0.5
+scikit-learn 1.8.0 · RDKit 2025.03.4 · NLTK 3.9.1
+```
 
 The supporting files and sample inputs live in the `data/` folder; results are
 written to the `results/` folder.
@@ -187,13 +253,19 @@ Jupyter users may run `DLEPS_tutorial.ipynb` for a more interactive workflow.
 
 ## Model weights
 
-The weights are **not** in this repository. Download them from the project
-drive and place them in `data/`:
+The **ONNX model ships with this repository**:
 
 ```
-denseweight.h5
-DLEPS_30000_tune_gvae10000.h5
-SMILE_train_demo.h5
+data/onnx/dleps_0b_0.73.h5.onnx      # 21 MB, the full inference graph
+```
+
+Two supporting files are **not** in this repository (they are too large for git and
+unchanged from the original project). Download them from the project drive and place
+them in `data/`:
+
+```
+denseweight.h5                        # 92 MB, maps the 978 predicted genes onto 12,328 genes
+SMILE_train_demo.h5                  # only needed for training
 SMILE_test_demo.h5
 RNA_train_demo.h5
 RNA_test_demo.h5
@@ -201,22 +273,38 @@ RNA_test_demo.h5
 
 https://drive.google.com/drive/folders/1Fye5Bn_ZkT_wjZJIWTcj4RqGXZq-nd4L
 
-`benchmark.csv` is in the `data/` folder.
+`benchmark.csv` and `gene_info.txt` are in the `data/` folder.
+
+## Training
+
+The exported graph is inference-only and cannot be trained further. Training still
+requires the Keras build:
+
+* [`kekegg/DLEPS_py3`](https://github.com/kekegg/DLEPS_py3) — Python 3 + Keras
+* `code/DLEPS/Training.ipynb` in this repository — the training notebook, kept for
+  reference. It needs the Keras build to run; the ONNX build deliberately does not
+  carry TensorFlow.
+* `code/DLEPS/models/model_zinc.py` — the grammar VAE definition (Keras).
+
+To produce a new ONNX graph, train with the Keras build and export it with
+`keras2onnx`; then check the result with `scripts/verify_onnx_weights.py`.
 
 ## Repository layout
 
 ```
-code/DLEPS/            # the model (Python 3)
+code/DLEPS/            # the model (Python 3, ONNX inference)
 ├── driv_DLEPS.py      # CLI entry point
 ├── dleps_predictor.py # DLEPS class: predict / cal_expr / comp_cs
-├── molecule_vae.py    # MoleculeVAE (zinc-grammar VAE)
+├── molecule_vae.py    # grammar VAE helpers (training only)
 ├── utils.py           # SMILES → one-hot, fingerprint helpers
 ├── vectorized_cmap.py # connectivity-score helpers
 ├── zinc_grammar.py    # zinc-grammar productions
-└── models/            # model definitions (Keras)
+└── models/            # model definitions (Keras — training only)
 code/Preprocess/       # R + notebook preprocessing
 code/analysis_plot/    # analysis notebooks
-data/                  # inputs, gene signatures, benchmark
+data/                  # inputs, gene signatures, benchmark, ONNX weights
+scripts/
+└── verify_onnx_weights.py   # ONNX ↔ Keras weight comparison
 ```
 
 # License

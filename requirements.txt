@@ -1,19 +1,23 @@
-# Python 3 dependencies for the DLEPS port.
+# Python 3 dependencies for the DLEPS ONNX build.
 #
-# Versions below are the ones this port was verified against
-# (Python 3.9.7 / TensorFlow 2.15.0 / Keras 2.15.0).
+# The inference path needs neither TensorFlow nor Keras: the model is an
+# ONNX graph executed by onnxruntime.
 #
-# Note: `lib2to3` was removed from Python 3.13 — use Python <= 3.12 if you
-# want to re-run the 2to3 conversion yourself.
+# Verified against:
+#   Python 3.13.7 · onnxruntime 1.30.0 · NumPy 2.4.2 · pandas 3.0.5
+#   scikit-learn 1.8.0 · SciPy 1.14.1 · h5py 3.13.0 · RDKit 2025.03.4 · NLTK 3.9.1
 
-tensorflow==2.15.0
-keras==2.15.0
-numpy==1.26.4
-pandas==2.2.3
-scikit-learn==1.6.1
-scipy==1.13.1
-h5py
-rdkit==2023.3.3
-nltk==3.9.1
-requests
+onnxruntime>=1.12
+numpy>=1.21
+pandas>=1.3
+scikit-learn>=1.0
+scipy>=1.7
+h5py>=3.0
+rdkit>=2022.09
+nltk>=3.6
 matplotlib
+
+# Keras / TensorFlow are needed only to *train* a new model
+# (see the "Training" section of README.md):
+#   tensorflow==2.15.0
+#   keras==2.15.0

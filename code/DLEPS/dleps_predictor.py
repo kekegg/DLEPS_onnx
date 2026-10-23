@@ -11,18 +11,12 @@
 
 
 from os import path
-import requests
 
 import numpy as np
 import pandas as pd
 import nltk
 import h5py
-import tensorflow as tf
-from keras.layers import Input, Dense, Dropout, Lambda
-from keras.models import Model, Sequential
-from keras import backend as K
-from keras import optimizers
-from keras.callbacks import ModelCheckpoint, ReduceLROnPlateau
+import onnxruntime as onnxrt
 
 from utils import get_fp, to1hot
 import molecule_vae
@@ -30,15 +24,14 @@ from molecule_vae import get_zinc_tokenizer
 import zinc_grammar
 from vectorized_cmap import computecs
 
-def sampling(args):
-    z_mean_, z_log_var_ = args
-    batch_size = K.shape(z_mean_)[0]
-    epsilon = K.random_normal(shape=(batch_size, 56), mean=0., stddev = 0.01)
-    return z_mean_ + K.exp(z_log_var_ / 2) * epsilon
+# ONNX weights shipped with this repository (relative to code/DLEPS).
+DEFAULT_ONNX_DIR = '../../data/onnx'
+DEFAULT_ONNX_FILES = ['dleps_0b_0.73.h5.onnx']
 
 
 class DLEPS(object):
-    def __init__(self, setmean = False, reverse = True, base = -2, up_name=None, down_name=None, save_exp = None):
+    def __init__(self, setmean = False, reverse = True, base = -2, up_name=None, down_name=None, save_exp = None,
+                 onnx_dir = DEFAULT_ONNX_DIR, onnx_files = None):
 
         
         self.save_exp = save_exp
@@ -47,8 +40,9 @@ class DLEPS(object):
         self.setmean = setmean
         self.loaded = False
         
-        self.model = []
-        self.model.append(self._build_model())
+        # ONNX inference sessions (Keras / TensorFlow are not required).
+        self.sessions = self._load_onnx(onnx_dir, DEFAULT_ONNX_FILES if onnx_files is None else onnx_files)
+        self.loaded = True
         self.W = self._get_W()
         A3, self.con = self._get_con()
         self.full_con = A3.dot(self.W)
@@ -70,25 +64,35 @@ class DLEPS(object):
             self.reverse = False
             print('DLEPS: No input of down files\n')
 
-    def _build_model(self):
-        # Variational autoencoder weights
-        grammar_weights = '../../data/vae.hdf5'
-        grammar_model = molecule_vae.ZincGrammarModel(grammar_weights)
-        self.grammar_model = grammar_model
-        z_mn, z_var = grammar_model.vae.encoderMV.output
-        x = Lambda(sampling, output_shape=(56,), name='lambda')([z_mn, z_var])
-        x = Dense(1024,activation='relu')(x)
-        x = Dropout(0.25)(x)
-        x = Dense(1024,activation='relu')(x)
-        x = Dropout(0.25)(x)
-        x = Dense(1024,activation='relu')(x)
-        x = Dropout(0.25)(x)
-        x = Dense(1024,activation='tanh')(x)
-        x = Dropout(0.25)(x)
-        expression = Dense(978,activation='linear')(x)
-        model = Model(inputs = grammar_model.vae.encoderMV.input, outputs = expression)
-        
-        return model
+    def _load_onnx(self, onnx_dir, onnx_files):
+        # The exported ONNX graph already contains the whole inference stack
+        # (grammar encoder -> VAE sampling -> expression head), so the Keras
+        # grammar model ('../../data/vae.hdf5') is not needed any more.
+        sessions = []
+        for fn in onnx_files:
+            p = path.join(onnx_dir, fn)
+            if not path.exists(p):
+                print('DLEPS: ONNX weights not found at %s\n' % p)
+                continue
+            sessions.append(onnxrt.InferenceSession(p, providers=['CPUExecutionProvider']))
+            print('DLEPS: loaded ONNX weights %s\n' % p)
+        if len(sessions) == 0:
+            raise FileNotFoundError(
+                'DLEPS: no ONNX weights found in "%s" (expected %s). '
+                'The ONNX weights are shipped in data/onnx/ of this repository.'
+                % (onnx_dir, ', '.join(onnx_files)))
+        return sessions
+
+    def _predict_onnx(self, onehot):
+        # Run the ONNX graph(s). With several models the predictions are averaged,
+        # the same ensemble rule as the AIDock server.
+        feats = onehot.astype(np.float32)
+        res = []
+        for sess in self.sessions:
+            inp = sess.get_inputs()[0].name
+            out = sess.get_outputs()[0].name
+            res.append(sess.run([out], {inp: feats})[0])
+        return np.mean(np.array(res), axis=0)
     
     # Map the 978 genes to 12328 genes
     def _get_W(self):
@@ -116,39 +120,17 @@ class DLEPS(object):
         return ups_new
     
     def train(self, smile_train, rna_train, validation_data, epochs=30000, batch_size=512, shuffle=True):
-    
-        assert (not self.loaded), 'Dense Model should not be loaded before training.'
-        
-        reduce_lr = ReduceLROnPlateau(monitor = 'val_loss',
-                                  factor = 0.2,
-                                  patience = 10,
-                                  min_lr = 0.0001)
-        
-        for layer in self.grammar_model.vae.encoderMV.layers:
-            layer.trainable = False
-        
-        sgd = optimizers.SGD(lr=0.1, decay=0, momentum=0.9, nesterov=True)
-        rms = optimizers.RMSprop(lr=0.001, rho=0.9, epsilon=None, decay=0.0)
-        ada = optimizers.Adagrad(lr=0.01, epsilon=None, decay=0.0)
-        adaD = optimizers.Adadelta(lr=1.0, rho=0.95, epsilon=None, decay=0.0)
-        adam = optimizers.Adam(lr=0.001, beta_1=0.9, beta_2=0.999, epsilon=1e-8, decay=0.0)
-        self.model[0].compile(optimizer='adadelta', loss='mean_squared_error')
-        
-        his = self.model[0].fit(smile_train, 
-                rna_train, epochs=epochs,
-                batch_size=batch_size,
-                shuffle=shuffle, 
-                validation_data=validation_data, # validation_data = (smile_val, rna_val)
-                callbacks = [reduce_lr])
-        
-        return his
-    
+        raise NotImplementedError(
+            'This is the ONNX build of DLEPS: the exported graph is inference-only and '
+            'cannot be trained further. Train with the original DLEPS (Keras) build and '
+            're-export the resulting weights to ONNX.')
+
     # Only calculate the expression changes, clean smiles required
     def cal_expr(self, smiles, average=True):
         expr = []
         if len(smiles) > 0:
             onehot = to1hot(smiles)
-            expr = self.model[0].predict(onehot)
+            expr = self._predict_onnx(onehot)
             return expr
         else:
             return []
@@ -170,12 +152,6 @@ class DLEPS(object):
         return cs[0].values
         
     def predict(self, smiles, average=True, save_onehot=None, load_onehot=None, save_expr = None):
-        # Dense network weights
-        if not self.loaded:
-            if path.exists('../../data/DLEPS_30000_tune_gvae10000.h5'):
-                self.model[0].load_weights('../../data/DLEPS_30000_tune_gvae10000.h5')
-                self.loaded = True
-            
         score = []
         idx = []
         expr = []
@@ -216,30 +192,7 @@ class DLEPS(object):
                     np.save(save_onehot,onehot)
                     np.save(save_onehot+'_idx',idx)
             if self.loaded:
-                expr = self.model[0].predict(onehot)
-            else:
-                batch_s = 128
-                if onehot.shape[0]>batch_s:
-                    num_run = onehot.shape[0] // batch_s + 1
-                    for ii in range(num_run):
-                        if ii < num_run -1:
-                            payload = {"instances": onehot[ii*batch_s:(ii+1)*batch_s].tolist()}
-                        else:
-                            payload = {"instances": onehot[ii*batch_s:].tolist()}
-                        #For users in China
-                        #res = requests.post("http://152.136.253.110:8018/v1/models/dleps:predict", json=payload)
-                        #For users outside China
-                        res = requests.post("http://161.35.239.224:8501/v1/models/dleps:predict", json=payload)
-                        res = res.json()
-                        if ii == 0:
-                            expr = np.array(res['predictions'])
-                        else:
-                            expr = np.concatenate([expr, res['predictions']], axis = 0)
-                else:
-                    payload = {"instances": onehot.tolist()}
-                    res = requests.post("http://161.35.239.224:8501/v1/models/dleps:predict", json=payload)
-                    res = res.json()
-                    expr = np.array(res['predictions'])
+                expr = self._predict_onnx(onehot)
             print('DLEPS: 978 signatures obtained\n\n')
             step_size = 50000
             

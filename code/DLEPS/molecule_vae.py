@@ -2,7 +2,6 @@ import nltk
 import numpy as np
 
 import zinc_grammar
-import models.model_zinc
 from functools import reduce
 
 def xlength(y):
@@ -53,6 +52,9 @@ class ZincGrammarModel(object):
 
     def __init__(self, weights_file, latent_rep_size=56):
         """ Load the (trained) zinc encoder/decoder, grammar model. """
+        # Imported lazily: models.model_zinc needs Keras, which the ONNX
+        # inference path does not use at all.
+        import models.model_zinc
         self._grammar = zinc_grammar
         self._model = models.model_zinc
         self.MAX_LEN = self._model.MAX_LEN
