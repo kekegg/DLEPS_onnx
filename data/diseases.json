@@ -1,0 +1,64 @@
+{
+  "_comment": [
+    "Disease -> up/down gene signature mapping for the DLEPS (ONNX) build.",
+    "The signature files live in data/ and hold one ENTREZGENE_ACC per line,",
+    "no header. A disease is servable as soon as both files exist; entries",
+    "whose files are missing are listed but rejected with an actionable error.",
+    "Adding a disease is a matter of dropping the two files into data/ and",
+    "adding an entry here -- no code change.",
+    "NOTE: 'Obesity' has no signature file in this repository yet. The entry",
+    "is kept so the tool reports 'signature missing' instead of 'unknown",
+    "disease'; drop Obesity_up / Obesity_down into data/ to enable it."
+  ],
+  "diseases": {
+    "Aging": {
+      "label": "衰老 / 棕色脂肪（browning）",
+      "up": "BROWNING_up",
+      "down": "BROWNING_down",
+      "aliases": ["aging", "ageing", "browning", "browning adipose", "衰老", "抗衰", "老化", "棕色脂肪", "褐色化"]
+    },
+    "Aging (top 100 genes)": {
+      "label": "衰老 · 上/下调各取前 100 个基因（MKB 集合）",
+      "up": "Aging_upgenes_MKB_100",
+      "down": "Aging_downgenes_MKB_100",
+      "aliases": ["aging mkb", "aging top100", "衰老 mkb", "衰老前100"]
+    },
+    "Aging (expert screen)": {
+      "label": "衰老 · 专家筛选的精简签名",
+      "up": "Browning_Expert_UP",
+      "down": "Browning_Expert_DOWN",
+      "aliases": ["browning expert", "expert aging", "衰老专家", "专家签名"]
+    },
+    "Gout": {
+      "label": "痛风 / 高尿酸血症",
+      "up": "HUA_up",
+      "down": "HUA_down",
+      "aliases": ["gout", "hyperuricemia", "hyperuric acid", "痛风", "高尿酸", "高尿酸血症"]
+    },
+    "Pulmonary fibrosis": {
+      "label": "肺纤维化",
+      "up": "FIBROSIS_up",
+      "down": "FIBROSIS_down",
+      "aliases": ["fibrosis", "ipf", "pulmonary fibrosis", "肺纤维化", "肺间质纤维化", "肺硬化"]
+    },
+    "Non-alcoholic fatty liver disease": {
+      "label": "非酒精性脂肪性肝病（NASH III 期）",
+      "up": "NASH_III_up",
+      "down": "NASH_III_down",
+      "aliases": ["nafld", "nash", "nash iii", "fatty liver", "脂肪肝", "非酒精性脂肪肝", "非酒精性脂肪性肝病"]
+    },
+    "Non-alcoholic fatty liver disease (stage IV)": {
+      "label": "非酒精性脂肪性肝病（NASH IV 期）",
+      "up": "NASH_IV_up",
+      "down": "NASH_IV_down",
+      "aliases": ["nafld iv", "nash iv", "脂肪肝 iv", "非酒精性脂肪肝 iv"]
+    },
+    "Obesity": {
+      "label": "肥胖（签名文件尚未入库）",
+      "up": "Obesity_up",
+      "down": "Obesity_down",
+      "aliases": ["obesity", "fat", "adiposity", "肥胖", "肥胖症"],
+      "note": "缺少 Obesity_up / Obesity_down；放入 data/ 即自动启用。"
+    }
+  }
+}

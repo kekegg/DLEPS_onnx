@@ -251,6 +251,49 @@ Batch jobs are in `run_script`.
 
 Jupyter users may run `DLEPS_tutorial.ipynb` for a more interactive workflow.
 
+## Local service
+
+`scripts/dleps_score.py` exposes the model as a reusable service instead of a
+one-shot CSV pipeline. It runs the same ONNX graph, but takes a **disease name**
+instead of a pair of signature files, and it needs no upload and no API key.
+
+```bash
+python scripts/dleps_score.py --list-diseases
+python scripts/dleps_score.py --disease "Gout" --smiles "CCO,CC(=O)Oc1ccccc1C(=O)O" --repeats 3
+python scripts/dleps_score.py --disease Aging --smiles-file candidates.txt --json scores.json
+```
+
+The disease → signature mapping lives in `data/diseases.json` and is declarative:
+adding a disease means dropping two signature files into `data/` and adding one
+JSON entry — no code change. Chinese aliases (`痛风`, `肺纤维化`, `脂肪肝`, `衰老`,
+`抗衰`) are accepted, and any other signature can be passed directly with
+`--up-file` / `--down-file`.
+
+**`scripts/dleps_mcp_server.py`** wraps the same scorer as a stdio MCP server that
+exposes one tool:
+
+```text
+calculate_dleps_score(smiles_list, disease_name, up_file?, down_file?, n_repeats?)
+    -> {status, msg, pred_scores: [{smiles, cs_score}, ...]}
+```
+
+The tool name, the argument names and the return shape are identical to the
+remote `calculate_dleps_score` tool of the SCP Hub, so the same agent code works
+against either backend:
+
+```bash
+mcp create dleps-onnx --transport stdio \
+  --command python3 --args <this-repo>/scripts/dleps_mcp_server.py
+```
+
+A score above `0.2` marks a candidate worth testing. The model's head is
+stochastic (it samples `eps ~ N(0, 0.01)` in the VAE reparameterisation), so
+`n_repeats = 3..5` averages the expression outputs and removes most of the jitter —
+use it whenever the score decides something.
+
+`denseweight.h5` is looked up in this order: `$DLEPS_DENSEWEIGHT`, `data/denseweight.h5`,
+`~/.cache/dleps/denseweight.h5`.
+
 ## Model weights
 
 The **ONNX model ships with this repository**:
@@ -303,8 +346,11 @@ code/DLEPS/            # the model (Python 3, ONNX inference)
 code/Preprocess/       # R + notebook preprocessing
 code/analysis_plot/    # analysis notebooks
 data/                  # inputs, gene signatures, benchmark, ONNX weights
+├── diseases.json     # disease → up/down signature map (declarative)
 scripts/
-└── verify_onnx_weights.py   # ONNX ↔ Keras weight comparison
+├── verify_onnx_weights.py   # ONNX ↔ Keras weight comparison
+├── dleps_score.py           # reusable scorer + CLI (disease name → reversal score)
+└── dleps_mcp_server.py      # stdio MCP server exposing calculate_dleps_score
 ```
 
 # License
