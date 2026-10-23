@@ -164,7 +164,8 @@ def build_server():
                 arguments.get('smiles_list') or [],
                 arguments.get('disease_name') or '',
                 arguments.get('up_file'),
-                arguments.get('down_file'))
+                arguments.get('down_file'),
+                arguments.get('n_repeats', 1))
         return [TextContent(type='text', text=json.dumps(payload, ensure_ascii=False))]
 
     return server
