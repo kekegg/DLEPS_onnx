@@ -47,7 +47,7 @@ def to1hot(smiles):
             iid.append(i)
             #print(i)
         except:
-            print("DLEPS: Error when process SMILES using rdkit at %d, skipped this molecule" % (i))
+            print(("DLEPS: Error when process SMILES using rdkit at %d, skipped this molecule" % (i)))
     assert type(smiles_rdkit) == list
     tokens = list(map(_tokenize, smiles_rdkit))
     parse_trees = []
@@ -59,7 +59,7 @@ def to1hot(smiles):
             tp = next(_parser.parse(t))
             parse_trees.append(tp)
         except:
-            print("DLEPS: Parse tree error at %d, skipped this molecule" % i)
+            print(("DLEPS: Parse tree error at %d, skipped this molecule" % i))
             badi.append(i)
         i += 1
         #print(i)

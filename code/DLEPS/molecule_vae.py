@@ -118,7 +118,7 @@ class ZincGrammarModel(object):
             rhs = [[a for a in self._productions[i].rhs() if (type(a) == nltk.grammar.Nonterminal) and (str(a) != 'None')] 
                    for i in sampled_output]
             for ix in range(S.shape[0]):
-                S[ix].extend(map(str, rhs[ix])[::-1])
+                S[ix].extend(list(map(str, rhs[ix]))[::-1])
         return X_hat # , ln_p
 
     def decode(self, z):

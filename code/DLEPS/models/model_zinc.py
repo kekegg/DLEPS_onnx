@@ -1,12 +1,12 @@
 import copy
 from keras import backend as K
-from keras import objectives
+from keras import losses as objectives
 from keras.models import Model
 from keras.layers import Input, Dense, Lambda
-from keras.layers.core import Dense, Activation, Flatten, RepeatVector
-from keras.layers.wrappers import TimeDistributed
-from keras.layers.recurrent import GRU
-from keras.layers.convolutional import Convolution1D
+from keras.layers import Dense, Activation, Flatten, RepeatVector
+from keras.layers import TimeDistributed
+from keras.layers import GRU
+from keras.layers import Conv1D as Convolution1D
 import tensorflow as tf
 import zinc_grammar as G
 

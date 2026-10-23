@@ -63,7 +63,7 @@ def main():
 
         dt['score'] = scores
         dt.to_csv(args.output)
-        print("Output has been saved at : " + args.output)
+        print(("Output has been saved at : " + args.output))
 
 if __name__ == '__main__':
     main()    

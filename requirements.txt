@@ -1,0 +1,19 @@
+# Python 3 dependencies for the DLEPS port.
+#
+# Versions below are the ones this port was verified against
+# (Python 3.9.7 / TensorFlow 2.15.0 / Keras 2.15.0).
+#
+# Note: `lib2to3` was removed from Python 3.13 — use Python <= 3.12 if you
+# want to re-run the 2to3 conversion yourself.
+
+tensorflow==2.15.0
+keras==2.15.0
+numpy==1.26.4
+pandas==2.2.3
+scikit-learn==1.6.1
+scipy==1.13.1
+h5py
+rdkit==2023.3.3
+nltk==3.9.1
+requests
+matplotlib

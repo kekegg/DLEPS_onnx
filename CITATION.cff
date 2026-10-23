@@ -3,6 +3,8 @@ message: >-
   If you use DLEPS (code or model weights), or any drug-efficacy predictions
   it produces, please cite the paper below. Academic/research use only:
   commercial use requires prior written permission (see LICENSE).
+  This is the Python 3 port; the original Python 2 release lives at
+  https://github.com/kekegg/DLEPS .
 title: "Prediction of drug efficacy from transcriptional profiles with deep learning"
 type: article
 authors:
@@ -75,7 +77,7 @@ month: 11
 date-released: "2021-06-17"
 doi: "10.1038/s41587-021-00946-z"
 url: "https://doi.org/10.1038/s41587-021-00946-z"
-repository-code: "https://github.com/kekegg/DLEPS"
+repository-code: "https://github.com/kekegg/DLEPS_py3"
 identifiers:
   - type: doi
     value: "10.1038/s41587-021-00946-z"
