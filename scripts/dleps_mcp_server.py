@@ -86,6 +86,15 @@ INPUT_SCHEMA = {
                            'is jittery; 3-5 is recommended for screening decisions. '
                            '(default: 1)',
         },
+        'reverse': {
+            'type': 'boolean',
+            'description': 'Optional direction override. Omit it to use the direction '
+                           'declared for the disease: true = the signature states a disease '
+                           'state and a positive score means the compound reverses it; '
+                           'false = the signature states a therapeutic phenotype and a '
+                           'positive score means the compound mimics it (browning). For a '
+                           'custom up_file/down_file the default is true.',
+        },
     },
     'required': ['smiles_list', 'disease_name'],
 }
@@ -109,10 +118,12 @@ def _disease_catalog():
 
 
 def calculate_dleps_score(smiles_list, disease_name, up_file=None, down_file=None,
-                          n_repeats=1):
+                          n_repeats=1, reverse=None):
     """The tool body -- kept importable so it can be unit-tested directly."""
     scorer = get_scorer()
     n_repeats = max(1, int(n_repeats or 1))
+    if reverse is not None:
+        reverse = bool(reverse)
     try:
         if not up_file or not down_file:
             # Surface an unknown / not-installed disease before doing any work.
@@ -125,7 +136,7 @@ def calculate_dleps_score(smiles_list, disease_name, up_file=None, down_file=Non
     try:
         results = scorer.score(smiles_list, disease_name,
                                up_file=up_file, down_file=down_file,
-                               n_repeats=n_repeats)
+                               n_repeats=n_repeats, reverse=reverse)
     except Exception as e:  # noqa: BLE001 -- report, never crash the server
         return {'status': 'error', 'msg': '%s: %s' % (type(e).__name__, e), 'pred_scores': []}
 
@@ -140,6 +151,7 @@ def calculate_dleps_score(smiles_list, disease_name, up_file=None, down_file=Non
         'msg': msg,
         'pred_scores': [{'smiles': r['smiles'], 'cs_score': r['cs_score']} for r in results],
     }
+
 
 
 def build_server():
@@ -165,7 +177,8 @@ def build_server():
                 arguments.get('disease_name') or '',
                 arguments.get('up_file'),
                 arguments.get('down_file'),
-                arguments.get('n_repeats', 1))
+                arguments.get('n_repeats', 1),
+                arguments.get('reverse'))
         return [TextContent(type='text', text=json.dumps(payload, ensure_ascii=False))]
 
     return server
@@ -176,6 +189,14 @@ async def run_stdio():
 
     server = build_server()
     async with stdio_server() as (read, write):
+        # The DLEPS model code prints progress (gene lists, "978 signatures
+        # obtained", ...) to stdout -- and stdout *is* the MCP protocol
+        # channel.  Those prints would end up interleaved with the JSON-RPC
+        # frames and corrupt the stream as soon as the print buffer happens to
+        # flush.  The transport has already taken its own handle on the real
+        # stdout by now, so moving Python-level stdout to stderr keeps the
+        # protocol clean and still shows the diagnostics.
+        sys.stdout = sys.stderr
         await server.run(read, write, server.create_initialization_options())
 
 
@@ -187,8 +208,11 @@ def main(argv=None):
 
     if args.check:
         for d in get_scorer().available_diseases():
-            print('%-5s %-42s %s' % ('ok' if d['available'] else 'MISS',
-                                     d['disease'], d['label']))
+            print('%-5s %-42s %-9s %s / %s'
+                  % ('ok' if d['available'] else 'MISS',
+                     d['disease'],
+                     'reverse' if d['reverse'] else 'mimic',
+                     d['up_file'], d['down_file'] or '-'))
         return 0
 
     try:

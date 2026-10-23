@@ -266,8 +266,36 @@ python scripts/dleps_score.py --disease Aging --smiles-file candidates.txt --jso
 The disease → signature mapping lives in `data/diseases.json` and is declarative:
 adding a disease means dropping two signature files into `data/` and adding one
 JSON entry — no code change. Chinese aliases (`痛风`, `肺纤维化`, `脂肪肝`, `衰老`,
-`抗衰`) are accepted, and any other signature can be passed directly with
-`--up-file` / `--down-file`.
+`抗衰`, `肥胖`, `减肥`) are accepted, and any other signature can be passed
+directly with `--up-file` / `--down-file`.
+
+### Direction of the score
+
+Every entry carries a `reverse` flag, following the upstream
+`code/DLEPS/run_script`:
+
+| `reverse` | the signature states | a positive score means |
+|---|---|---|
+| `true` | a **disease state** (genes up/down in that state) | the compound **reverses** the state |
+| `false` | a **therapeutic phenotype** (genes up/down when that phenotype is induced) | the compound **mimics** it |
+
+| disease | signature | direction |
+|---|---|---|
+| `Aging` | `BROWNING_up` / `BROWNING_down` | mimic (inducing browning = anti-ageing) |
+| `Aging (top 100 genes)` | `Aging_upgenes_MKB_100` / `Aging_downgenes_MKB_100` | reverse |
+| `Aging (expert screen)` | `Browning_Expert_UP` (no down set) | mimic |
+| `Gout` | `HUA_up` / `HUA_down` | reverse |
+| `Pulmonary fibrosis` | `FIBROSIS_up` / `FIBROSIS_down` | reverse |
+| `Non-alcoholic fatty liver disease` | `NASH_III_up` / `NASH_III_down` | reverse |
+| `Non-alcoholic fatty liver disease (stage IV)` | `NASH_IV_up` / `NASH_IV_down` | reverse |
+| `Obesity` | `BROWNING_up` / `BROWNING_down` | mimic (inducing browning = fat burning = weight loss) |
+
+`Aging` and `Obesity` share one signature and one direction, so they return the
+same numbers — two readings of one computation (anti-ageing / weight loss), not
+two independent lines of evidence.
+
+`python scripts/dleps_score.py --list-diseases` prints the table above with the
+direction of each entry.
 
 **`scripts/dleps_mcp_server.py`** wraps the same scorer as a stdio MCP server that
 exposes one tool:

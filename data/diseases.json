@@ -2,63 +2,93 @@
   "_comment": [
     "Disease -> up/down gene signature mapping for the DLEPS (ONNX) build.",
     "The signature files live in data/ and hold one ENTREZGENE_ACC per line,",
-    "no header. A disease is servable as soon as both files exist; entries",
+    "no header. A disease is servable as soon as its files exist; entries",
     "whose files are missing are listed but rejected with an actionable error.",
-    "Adding a disease is a matter of dropping the two files into data/ and",
+    "Adding a disease is a matter of dropping the files into data/ and",
     "adding an entry here -- no code change.",
-    "NOTE: 'Obesity' has no signature file in this repository yet. The entry",
-    "is kept so the tool reports 'signature missing' instead of 'unknown",
-    "disease'; drop Obesity_up / Obesity_down into data/ to enable it."
+    "",
+    "'reverse' selects the direction of the score and follows the original",
+    "DLEPS run_script (code/DLEPS/run_script in the upstream repository):",
+    "  reverse = true  -- the signature states a DISEASE state (genes up and",
+    "                     down in that state). The score is positive when the",
+    "                     compound REVERSES the state, i.e. pushes the 'up'",
+    "                     genes down and the 'down' genes up.",
+    "  reverse = false -- the signature states a THERAPEUTIC PHENOTYPE (genes",
+    "                     up and down when that phenotype is induced). The",
+    "                     score is positive when the compound MIMICS it, i.e.",
+    "                     pushes the 'up' genes up and the 'down' genes down.",
+    "Browning (BROWNING_up/BROWNING_down, Browning_Expert_UP) is the latter:",
+    "the upstream run_script runs it with --reverse=False, because inducing",
+    "browning is the intervention, not the disease.",
+    "",
+    "'down' may be null: the score is then the enrichment of the 'up' set",
+    "alone. That is what the upstream run_script does for the expert browning",
+    "screen (--upset=Browning_Expert_UP with no --downset)."
   ],
   "diseases": {
     "Aging": {
       "label": "衰老 / 棕色脂肪（browning）",
       "up": "BROWNING_up",
       "down": "BROWNING_down",
-      "aliases": ["aging", "ageing", "browning", "browning adipose", "衰老", "抗衰", "老化", "棕色脂肪", "褐色化"]
+      "reverse": false,
+      "aliases": ["aging", "ageing", "browning", "browning adipose", "衰老", "抗衰", "老化", "棕色脂肪", "褐色化"],
+      "note": "诱导棕色脂肪 = 抗衰。正分 = 化合物 mimics browning（上游 run_script 用 --reverse=False）。"
     },
     "Aging (top 100 genes)": {
       "label": "衰老 · 上/下调各取前 100 个基因（MKB 集合）",
       "up": "Aging_upgenes_MKB_100",
       "down": "Aging_downgenes_MKB_100",
-      "aliases": ["aging mkb", "aging top100", "衰老 mkb", "衰老前100"]
+      "reverse": true,
+      "aliases": ["aging mkb", "aging top100", "衰老 mkb", "衰老前100"],
+      "note": "签名描述衰老本身（上调/下调），故取 reversal 方向：正分 = 逆转衰老特征。"
     },
     "Aging (expert screen)": {
       "label": "衰老 · 专家筛选的精简签名",
       "up": "Browning_Expert_UP",
-      "down": "Browning_Expert_DOWN",
-      "aliases": ["browning expert", "expert aging", "衰老专家", "专家签名"]
+      "down": null,
+      "reverse": false,
+      "aliases": ["browning expert", "expert aging", "衰老专家", "专家签名"],
+      "note": "上游 run_script 只传 --upset=Browning_Expert_UP（不给 downset），故此处 down=null，只用上调集打分。"
     },
     "Gout": {
       "label": "痛风 / 高尿酸血症",
       "up": "HUA_up",
       "down": "HUA_down",
-      "aliases": ["gout", "hyperuricemia", "hyperuric acid", "痛风", "高尿酸", "高尿酸血症"]
+      "reverse": true,
+      "aliases": ["gout", "hyperuricemia", "hyperuric acid", "痛风", "高尿酸", "高尿酸血症"],
+      "note": "签名描述高尿酸状态本身，故取 reversal 方向。"
     },
     "Pulmonary fibrosis": {
       "label": "肺纤维化",
       "up": "FIBROSIS_up",
       "down": "FIBROSIS_down",
-      "aliases": ["fibrosis", "ipf", "pulmonary fibrosis", "肺纤维化", "肺间质纤维化", "肺硬化"]
+      "reverse": true,
+      "aliases": ["fibrosis", "ipf", "pulmonary fibrosis", "肺纤维化", "肺间质纤维化", "肺硬化"],
+      "note": "签名描述纤维化状态本身，故取 reversal 方向。"
     },
     "Non-alcoholic fatty liver disease": {
       "label": "非酒精性脂肪性肝病（NASH III 期）",
       "up": "NASH_III_up",
       "down": "NASH_III_down",
-      "aliases": ["nafld", "nash", "nash iii", "fatty liver", "脂肪肝", "非酒精性脂肪肝", "非酒精性脂肪性肝病"]
+      "reverse": true,
+      "aliases": ["nafld", "nash", "nash iii", "fatty liver", "脂肪肝", "非酒精性脂肪肝", "非酒精性脂肪性肝病"],
+      "note": "签名描述 NASH III 状态本身，故取 reversal 方向。"
     },
     "Non-alcoholic fatty liver disease (stage IV)": {
       "label": "非酒精性脂肪性肝病（NASH IV 期）",
       "up": "NASH_IV_up",
       "down": "NASH_IV_down",
-      "aliases": ["nafld iv", "nash iv", "脂肪肝 iv", "非酒精性脂肪肝 iv"]
+      "reverse": true,
+      "aliases": ["nafld iv", "nash iv", "脂肪肝 iv", "非酒精性脂肪肝 iv"],
+      "note": "签名描述 NASH IV 状态本身，故取 reversal 方向。"
     },
     "Obesity": {
-      "label": "肥胖（签名文件尚未入库）",
-      "up": "Obesity_up",
-      "down": "Obesity_down",
-      "aliases": ["obesity", "fat", "adiposity", "肥胖", "肥胖症"],
-      "note": "缺少 Obesity_up / Obesity_down；放入 data/ 即自动启用。"
+      "label": "肥胖 / 减肥（棕色脂肪）",
+      "up": "BROWNING_up",
+      "down": "BROWNING_down",
+      "reverse": false,
+      "aliases": ["obesity", "fat", "adiposity", "weight loss", "肥胖", "肥胖症", "减肥", "减重"],
+      "note": "用 Browning_UP / Browning_Down（与 BROWNING_up/BROWNING_down 同一份文件），reverse=False。诱导棕色脂肪 = 脂肪燃烧 = 减肥，正分 = 化合物 mimics browning。"
     }
   }
 }

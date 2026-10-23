@@ -120,15 +120,32 @@ def resolve_disease(name, diseases=None):
 
 
 def signature_paths(disease_key, spec, data_dir=None):
-    """Resolve the up/down signature files of a disease."""
+    """Resolve the up/down signature files of a disease.
+
+    ``spec['down']`` may be ``None``: the score is then the enrichment of the
+    "up" set alone.  That is what the upstream ``run_script`` does for the
+    expert browning screen (``--upset=Browning_Expert_UP`` with no
+    ``--downset``).
+    """
     data_dir = Path(data_dir) if data_dir else DATA_DIR
     up = data_dir / spec['up']
-    down = data_dir / spec['down']
-    missing = [str(p) for p in (up, down) if not p.exists()]
+    down = data_dir / spec['down'] if spec.get('down') else None
+    missing = [str(p) for p in (up, down) if p is not None and not p.exists()]
     if missing:
         raise FileNotFoundError(
             'Signature file(s) missing for %s: %s' % (disease_key, ', '.join(missing)))
     return up, down
+
+
+def signature_direction(spec):
+    """Return the ``reverse`` flag of a disease spec.
+
+    ``True``  -- the signature states a disease state; a positive score means
+                 the compound reverses it.
+    ``False`` -- the signature states a therapeutic phenotype; a positive
+                 score means the compound mimics it (browning).
+    """
+    return bool(spec.get('reverse', True))
 
 
 # --------------------------------------------------------------------------
@@ -191,17 +208,23 @@ class DlepsScorer(object):
             sys.modules.update(saved)
         return self._dleps_cls
 
-    def _make_predictor(self, up_path, down_path):
+    def _make_predictor(self, up_path, down_path, reverse=None):
         """Instantiate the DLEPS class with the dense weights we resolved.
 
         The published ``dleps_predictor.py`` hard-codes
         ``../../data/denseweight.h5``; the subclass below points it at the
         file we actually found, so the model code stays untouched.
+
+        ``reverse`` decides the direction of the score (see
+        :func:`signature_direction`).  Note that the upstream ``DLEPS``
+        forces ``reverse = False`` when no "down" signature is given, so a
+        down-less signature is always scored in the "mimic" direction.
         """
         import h5py
 
         base = self._load_dleps_class()
         denseweight = self.denseweight
+        reverse = self.reverse if reverse is None else bool(reverse)
 
         class _LocalDLEPS(base):
             def _get_W(self):
@@ -209,9 +232,9 @@ class DlepsScorer(object):
                     return np.array(hf.get('W'))
 
         with self._in_code_dir():
-            return _LocalDLEPS(reverse=self.reverse,
+            return _LocalDLEPS(reverse=reverse,
                                up_name=str(up_path),
-                               down_name=str(down_path),
+                               down_name=str(down_path) if down_path is not None else None,
                                onnx_dir=str(self.onnx_dir),
                                onnx_files=self.onnx_files)
 
@@ -223,20 +246,23 @@ class DlepsScorer(object):
         out = []
         for key, spec in diseases.items():
             up = self.data_dir / spec['up']
-            down = self.data_dir / spec['down']
+            down = self.data_dir / spec['down'] if spec.get('down') else None
             out.append({
                 'disease': key,
                 'label': spec.get('label', ''),
                 'aliases': spec.get('aliases', []),
-                'available': up.exists() and down.exists(),
-                'n_up': len(spec['up']),
+                'available': up.exists() and (down is None or down.exists()),
+                'reverse': signature_direction(spec),
+                'direction': 'reverse the disease state' if signature_direction(spec)
+                             else 'mimic the phenotype (browning)',
                 'up_file': spec['up'],
-                'down_file': spec['down'],
+                'down_file': spec.get('down'),
+                'note': spec.get('note', ''),
             })
         return out
 
     def score(self, smiles_list, disease_name=None, threshold=EFFECTIVE_THRESHOLD,
-              n_repeats=1, up_file=None, down_file=None):
+              n_repeats=1, up_file=None, down_file=None, reverse=None):
         """Score every SMILES against ``disease_name``.
 
         Parameters
@@ -257,6 +283,14 @@ class DlepsScorer(object):
         up_file, down_file :
             Optional custom signature files (one ENTREZGENE_ACC per line).
             They override the disease mapping, so any signature can be used.
+        reverse :
+            Optional direction override.  ``None`` (the default) uses the
+            direction declared for the disease in ``data/diseases.json``; for a
+            custom signature it means the upstream default, ``True``.
+            ``True``  -- the signature states a disease state, a positive score
+                         means the compound reverses it.
+            ``False`` -- the signature states a therapeutic phenotype, a
+                         positive score means the compound mimics it.
 
         Returns
         -------
@@ -271,7 +305,12 @@ class DlepsScorer(object):
             return []
 
         if up_file and down_file:
-            up_path, down_path = Path(up_file), Path(down_file)
+            # Resolve to absolute paths: DLEPS reads the signature files while
+            # the working directory is code/DLEPS/, so a path relative to the
+            # repository root would not be found.
+            up_path = Path(up_file).expanduser().resolve()
+            down_path = Path(down_file).expanduser().resolve()
+            reverse = self.reverse if reverse is None else bool(reverse)
             missing = [str(p) for p in (up_path, down_path) if not p.exists()]
             if missing:
                 raise FileNotFoundError(
@@ -281,7 +320,8 @@ class DlepsScorer(object):
                 raise ValueError('disease_name is required (or give up_file/down_file)')
             key, spec = resolve_disease(disease_name)
             up_path, down_path = signature_paths(key, spec, self.data_dir)
-        predictor = self._make_predictor(up_path, down_path)
+            reverse = signature_direction(spec) if reverse is None else bool(reverse)
+        predictor = self._make_predictor(up_path, down_path, reverse=reverse)
 
         n_repeats = max(1, int(n_repeats))
         runs = []
@@ -325,8 +365,14 @@ def main(argv=None):
         epilog='examples:\n'
                '  python scripts/dleps_score.py --list-diseases\n'
                '  python scripts/dleps_score.py --disease "Gout" --smiles "CCO,CC(=O)Oc1ccccc1C(=O)O"\n'
-               '  python scripts/dleps_score.py --disease Aging --smiles-file mols.txt --json out.json\n')
+               '  python scripts/dleps_score.py --disease Aging --smiles-file mols.txt --json out.json\n'
+               '  python scripts/dleps_score.py --up-file up.txt --down-file down.txt --smiles "CCO"\n')
     ap.add_argument('--disease', help='disease name (see --list-diseases)')
+    ap.add_argument('--up-file', dest='up_file',
+                    help='custom up-regulated signature file (one ENTREZGENE_ACC per line); '
+                         'overrides the disease mapping')
+    ap.add_argument('--down-file', dest='down_file',
+                    help='custom down-regulated signature file; overrides the disease mapping')
     ap.add_argument('--smiles', help='comma separated SMILES')
     ap.add_argument('--smiles-file', help='file with one SMILES per line')
     ap.add_argument('--json', help='write the result to this JSON file')
@@ -338,17 +384,30 @@ def main(argv=None):
                          '(default: %(default)s; use 3-5 for screening decisions)')
     ap.add_argument('--list-diseases', action='store_true',
                     help='list the supported diseases and exit')
+    direction = ap.add_mutually_exclusive_group()
+    direction.add_argument('--reverse', dest='direction', action='store_const',
+                           const=True,
+                           help='the signature states a disease state: a positive score '
+                                'means the compound reverses it (overrides the disease entry)')
+    direction.add_argument('--no-reverse', dest='direction', action='store_const',
+                           const=False,
+                           help='the signature states a therapeutic phenotype: a positive '
+                                'score means the compound mimics it (overrides the disease entry)')
+    ap.set_defaults(direction=None)
     args = ap.parse_args(argv)
 
     if args.list_diseases:
         for d in DlepsScorer().available_diseases():
             flag = 'ok ' if d['available'] else 'MISS'
-            print('%-5s %-38s %-46s %s / %s'
-                  % (flag, d['disease'], d['label'], d['up_file'], d['down_file']))
+            print('%-5s %-38s %-46s %-9s %s / %s'
+                  % (flag, d['disease'], d['label'],
+                     'reverse' if d['reverse'] else 'mimic',
+                     d['up_file'], d['down_file'] or '-'))
         return 0
 
-    if not args.disease:
-        ap.error('--disease is required (or use --list-diseases)')
+    if not args.disease and not (args.up_file and args.down_file):
+        ap.error('--disease is required (or --up-file together with --down-file; '
+                 'or use --list-diseases)')
     if not args.smiles and not args.smiles_file:
         ap.error('--smiles or --smiles-file is required')
 
@@ -359,8 +418,15 @@ def main(argv=None):
         smiles = [s.strip() for s in args.smiles.split(',') if s.strip()]
 
     scorer = DlepsScorer()
-    results = scorer.score(smiles, args.disease, threshold=args.threshold,
-                           n_repeats=args.repeats)
+    try:
+        results = scorer.score(smiles, args.disease, threshold=args.threshold,
+                               n_repeats=args.repeats,
+                               up_file=args.up_file, down_file=args.down_file,
+                               reverse=args.direction)
+    except KeyError as e:
+        ap.error(str(e.args[0]) if e.args else 'unknown disease')
+    except FileNotFoundError as e:
+        ap.error(str(e))
 
     print('%-52s %10s  %s' % ('SMILES', 'cs_score', 'verdict'))
     for r in results:
