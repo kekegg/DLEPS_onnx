@@ -322,6 +322,45 @@ use it whenever the score decides something.
 `denseweight.h5` is looked up in this order: `$DLEPS_DENSEWEIGHT`, `data/denseweight.h5`,
 `~/.cache/dleps/denseweight.h5`.
 
+## Graphical client
+
+`gui/dleps_gui.py` is a PySide6 desktop client for the same model. It runs
+entirely locally — no API key, no upload, no TensorFlow.
+
+```bash
+pip install -r requirements.txt -r requirements-gui.txt
+python gui/dleps_gui.py
+```
+
+The option set mirrors the DLEPS tab of the AIDock client, and every option
+maps onto something the model really does:
+
+| GUI option | Effect |
+|---|---|
+| Reverse the UP / Down genes | the score direction: checked = the compound reverses the disease state, unchecked = it mimics the phenotype (browning) |
+| Set Mean | centres the RNA levels on the set mean of the current input (for unbalanced output) |
+| Use absolute value of ES score | reports \|score\|, ignoring the sign |
+| Gene Correlation Cutoff | 0 – 0.8; 0 keeps every gene, 0.68376 keeps only the well-predicted ones (`data/corr_genes_12328.csv`) |
+| Save / Use onehot array | caches the one-hot encoding of the input SMILES and reuses it on the next run |
+| If use the transformer model | **disabled** — the AG-BT transformer weights are not shipped with this repository |
+
+On top of that the client offers:
+
+* the **disease presets** of `data/diseases.json` — pick a disease and the
+  signature and its direction are filled in for you;
+* **text** and **file** input for the up / down gene lists, with a *Check the
+  genes* button that shows which submitted ids the model can actually use
+  (the 12,328-gene list) and which ones it has never heard of;
+* a sorted result table, a score histogram and a CSV export;
+* settings that persist between sessions (`~/.dleps_onnx_gui.json`).
+
+The one-hot cache is keyed on the **content** of the SMILES list, not on a
+file name: the upstream DLEPS reuses the cache whenever the input *path*
+matches, which silently scores a changed molecule set against a stale
+encoding.
+
+The scoring runs on a worker thread, so the window stays responsive.
+
 ## Model weights
 
 The **ONNX model ships with this repository**:
@@ -375,6 +414,11 @@ code/Preprocess/       # R + notebook preprocessing
 code/analysis_plot/    # analysis notebooks
 data/                  # inputs, gene signatures, benchmark, ONNX weights
 ├── diseases.json     # disease → up/down signature map (declarative)
+├── gene_info.txt     # the 12,328 predicted genes
+├── corr_genes_12328.csv  # the same table + per-gene prediction correlation
+gui/                   # PySide6 desktop client
+├── dleps_gui.py      # the application
+└── test_gui_e2e.py   # end-to-end test (offscreen)
 scripts/
 ├── verify_onnx_weights.py   # ONNX ↔ Keras weight comparison
 ├── dleps_score.py           # reusable scorer + CLI (disease name → reversal score)

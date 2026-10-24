@@ -46,6 +46,7 @@ import contextlib
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -149,6 +150,101 @@ def signature_direction(spec):
 
 
 # --------------------------------------------------------------------------
+# gene list helpers
+# --------------------------------------------------------------------------
+
+def load_gene_table(data_dir=None):
+    """Return the 12,328-gene table (``pr_gene_id`` -> gene record)."""
+    data_dir = Path(data_dir) if data_dir else DATA_DIR
+    path = data_dir / 'gene_info.txt'
+    if not path.exists():
+        raise FileNotFoundError('gene_info.txt not found at %s' % path)
+    import pandas as pd
+    return pd.read_table(str(path), header=0)
+
+
+def load_gene_correlations(data_dir=None):
+    """Return ``{gene_id: correlation}`` for the 12,328 predicted genes.
+
+    The correlation is the per-gene quality of the DLEPS prediction; the
+    AIDock server exposes it as the "Gene Correlation Cutoff" (0 - 0.8), where
+    0 keeps every gene and 0.68376 keeps only the well-predicted ones.
+    The values live in ``data/corr_genes_12328.csv`` (the same table as
+    ``gene_info.txt`` plus the correlation column).
+    """
+    data_dir = Path(data_dir) if data_dir else DATA_DIR
+    path = data_dir / 'corr_genes_12328.csv'
+    if not path.exists():
+        return {}
+    import pandas as pd
+    df = pd.read_csv(str(path))
+    col = '0' if '0' in df.columns else df.columns[-1]
+    return {int(g): float(c) for g, c in zip(df['pr_gene_id'], df[col])}
+
+
+def read_signature(path):
+    """Read a signature file and return the list of gene ids (ints)."""
+    out = []
+    with open(path, encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            try:
+                out.append(int(line))
+            except ValueError:
+                continue
+    return out
+
+
+def check_genes(gene_ids, data_dir=None):
+    """Split gene ids into (present in the 12,328 list, not present).
+
+    This is what the AIDock client's "Check the genes" button does: it shows
+    the submitted ids that the model can actually use and the ones it has
+    never heard of.
+    """
+    table = load_gene_table(data_dir)
+    known = set(int(g) for g in table['pr_gene_id'])
+    present, missing = [], []
+    for g in gene_ids:
+        try:
+            gi = int(g)
+        except (TypeError, ValueError):
+            missing.append(str(g))
+            continue
+        (present if gi in known else missing).append(gi)
+    return present, missing
+
+
+def filter_signature_by_correlation(path, cutoff, correlations, data_dir=None):
+    """Write a copy of a signature file keeping only well-predicted genes.
+
+    Mirrors the AIDock server: a cutoff of 0 (or outside 0 - 0.8) keeps every
+    gene, otherwise only the genes whose prediction correlation is above the
+    cutoff survive.  Returns the path of the (possibly temporary) file that
+    should be handed to the model.
+    """
+    path = Path(path)
+    if not (0 < cutoff < 0.8) or not correlations:
+        return path
+    genes = read_signature(path)
+    kept = [g for g in genes if correlations.get(g, 0.0) > cutoff]
+    if not kept:
+        raise ValueError(
+            'Gene Correlation Cutoff %.5f removed every gene of %s; lower it.'
+            % (cutoff, path.name))
+    tmp = tempfile.NamedTemporaryFile('w', suffix='_' + path.name,
+                                       prefix='dleps_geneCorr_', delete=False,
+                                       encoding='utf-8')
+    try:
+        tmp.write('\n'.join(str(g) for g in kept) + '\n')
+    finally:
+        tmp.close()
+    return Path(tmp.name)
+
+
+# --------------------------------------------------------------------------
 # scorer
 # --------------------------------------------------------------------------
 
@@ -156,7 +252,7 @@ class DlepsScorer(object):
     """Score candidate molecules against a disease signature with DLEPS_onnx."""
 
     def __init__(self, repo_root=None, onnx_dir=None, onnx_files=None,
-                 denseweight=None, reverse=True):
+                 denseweight=None, reverse=True, setmean=False):
         self.repo_root = Path(repo_root).resolve() if repo_root else REPO_ROOT
         self.code_dir = self.repo_root / 'code' / 'DLEPS'
         self.data_dir = self.repo_root / 'data'
@@ -164,7 +260,9 @@ class DlepsScorer(object):
         self.onnx_files = onnx_files
         self.denseweight = resolve_denseweight(denseweight)
         self.reverse = reverse
+        self.setmean = setmean
         self._dleps_cls = None
+        self._correlations = None
 
     # -- plumbing ----------------------------------------------------------
 
@@ -208,7 +306,7 @@ class DlepsScorer(object):
             sys.modules.update(saved)
         return self._dleps_cls
 
-    def _make_predictor(self, up_path, down_path, reverse=None):
+    def _make_predictor(self, up_path, down_path, reverse=None, setmean=None):
         """Instantiate the DLEPS class with the dense weights we resolved.
 
         The published ``dleps_predictor.py`` hard-codes
@@ -219,12 +317,16 @@ class DlepsScorer(object):
         :func:`signature_direction`).  Note that the upstream ``DLEPS``
         forces ``reverse = False`` when no "down" signature is given, so a
         down-less signature is always scored in the "mimic" direction.
+
+        ``setmean`` subtracts the set mean of the RNA levels of the current
+        input; the AIDock client offers it for unbalanced output.
         """
         import h5py
 
         base = self._load_dleps_class()
         denseweight = self.denseweight
         reverse = self.reverse if reverse is None else bool(reverse)
+        setmean = self.setmean if setmean is None else bool(setmean)
 
         class _LocalDLEPS(base):
             def _get_W(self):
@@ -233,6 +335,7 @@ class DlepsScorer(object):
 
         with self._in_code_dir():
             return _LocalDLEPS(reverse=reverse,
+                               setmean=setmean,
                                up_name=str(up_path),
                                down_name=str(down_path) if down_path is not None else None,
                                onnx_dir=str(self.onnx_dir),
@@ -262,7 +365,9 @@ class DlepsScorer(object):
         return out
 
     def score(self, smiles_list, disease_name=None, threshold=EFFECTIVE_THRESHOLD,
-              n_repeats=1, up_file=None, down_file=None, reverse=None):
+              n_repeats=1, up_file=None, down_file=None, reverse=None,
+              setmean=None, gene_corr=0.0, abs_score=False,
+              save_onehot=None, load_onehot=None):
         """Score every SMILES against ``disease_name``.
 
         Parameters
@@ -291,6 +396,18 @@ class DlepsScorer(object):
                          means the compound reverses it.
             ``False`` -- the signature states a therapeutic phenotype, a
                          positive score means the compound mimics it.
+        setmean :
+            Subtract the set mean of the RNA levels of the current input.
+            The AIDock client offers this "for unbalanced output".
+        gene_corr :
+            Gene Correlation Cutoff, 0 - 0.8.  0 keeps every gene; 0.68376
+            keeps only the well-predicted ones.  Same rule as the AIDock
+            server.
+        abs_score :
+            Report the absolute value of the score, ignoring its sign.
+        save_onehot, load_onehot :
+            Cache / reuse the one-hot encoding of the input SMILES, which
+            makes a repeated run over the same set much faster.
 
         Returns
         -------
@@ -321,7 +438,19 @@ class DlepsScorer(object):
             key, spec = resolve_disease(disease_name)
             up_path, down_path = signature_paths(key, spec, self.data_dir)
             reverse = signature_direction(spec) if reverse is None else bool(reverse)
-        predictor = self._make_predictor(up_path, down_path, reverse=reverse)
+
+        # Gene Correlation Cutoff: keep only the well-predicted genes.
+        if gene_corr:
+            if self._correlations is None:
+                self._correlations = load_gene_correlations(self.data_dir)
+            up_path = filter_signature_by_correlation(up_path, gene_corr,
+                                                      self._correlations, self.data_dir)
+            if down_path is not None:
+                down_path = filter_signature_by_correlation(down_path, gene_corr,
+                                                            self._correlations, self.data_dir)
+
+        predictor = self._make_predictor(up_path, down_path, reverse=reverse,
+                                         setmean=setmean)
 
         n_repeats = max(1, int(n_repeats))
         runs = []
@@ -335,7 +464,9 @@ class DlepsScorer(object):
 
             predictor._predict_onnx = _averaged
 
-        scores = predictor.predict(smiles_list)
+        scores = predictor.predict(smiles_list,
+                                   save_onehot=save_onehot,
+                                   load_onehot=load_onehot)
 
         expr_std = 0.0
         if runs:
@@ -345,6 +476,8 @@ class DlepsScorer(object):
         results = []
         for smi, sc in zip(smiles_list, scores):
             sc = float(sc)
+            if abs_score:
+                sc = abs(sc)
             results.append({
                 'smiles': smi,
                 'cs_score': sc,
@@ -384,6 +517,19 @@ def main(argv=None):
                          '(default: %(default)s; use 3-5 for screening decisions)')
     ap.add_argument('--list-diseases', action='store_true',
                     help='list the supported diseases and exit')
+    ap.add_argument('--setmean', action='store_true',
+                    help='subtract the set mean of the RNA levels of the current input '
+                         '(for unbalanced output)')
+    ap.add_argument('--abs', dest='abs_score', action='store_true',
+                    help='report the absolute value of the ES score, ignoring its sign')
+    ap.add_argument('--gene-corr', type=float, default=0.0,
+                    help='Gene Correlation Cutoff, 0 - 0.8. 0 keeps every gene; '
+                         '0.68376 keeps only the well-predicted ones (default: %(default)s)')
+    ap.add_argument('--save-onehot',
+                    help='save the one-hot encoding of the input SMILES to this path '
+                         '(reused automatically on the next run)')
+    ap.add_argument('--load-onehot',
+                    help='reuse a previously saved one-hot encoding instead of recomputing it')
     direction = ap.add_mutually_exclusive_group()
     direction.add_argument('--reverse', dest='direction', action='store_const',
                            const=True,
@@ -422,10 +568,16 @@ def main(argv=None):
         results = scorer.score(smiles, args.disease, threshold=args.threshold,
                                n_repeats=args.repeats,
                                up_file=args.up_file, down_file=args.down_file,
-                               reverse=args.direction)
+                               reverse=args.direction,
+                               setmean=args.setmean, gene_corr=args.gene_corr,
+                               abs_score=args.abs_score,
+                               save_onehot=args.save_onehot,
+                               load_onehot=args.load_onehot)
     except KeyError as e:
         ap.error(str(e.args[0]) if e.args else 'unknown disease')
     except FileNotFoundError as e:
+        ap.error(str(e))
+    except ValueError as e:
         ap.error(str(e))
 
     print('%-52s %10s  %s' % ('SMILES', 'cs_score', 'verdict'))
